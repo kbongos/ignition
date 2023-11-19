@@ -3,6 +3,41 @@
 // Todo: Make so it can log stats to flash, on demand or stop or something.
 //   Rev limit useful?  Is it a needed thing?
 //   Add support for 12V TCI, points.  Add Honda CB350/CB450 180 dual TCI ignition support.
+
+//#define TARGET_X86
+//#define TARGET_D1_MINI
+#ifdef ESP8266
+//#define TARGET_X86 // to force visual code to see X86 code, wish I had better way
+#define TARGET_D1_MINI
+#else
+#define TARGET_X86
+#endif
+
+#ifdef TARGET_X86
+#include <iostream>
+#include <vector>
+#include <string>
+#include <stdint.h>
+using namespace std;
+
+uint32_t sim_us_tm = 0;
+#define SIM_IO_F 1
+#define SIM_IO_A 2
+#define SIM_IO_SW1 4
+#define SIM_IO_SW2 8
+#define SIM_IO_i1 0x10
+#define SIM_IO_i2 0x20
+#define SIM_IO_L0 0x40
+#define SIM_IO_L1 0x80
+#define SIM_IO_L2 0x100
+uint16_t sim_io = 0;
+uint16_t sim_io_last = 0; // change detect
+#endif
+
+
+#ifdef TARGET_D1_MINI
+#define Serial_begin Serial.begin
+#define Serial_println Serial.println
 #ifdef DO_WIFI_SERVER
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
@@ -12,6 +47,16 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #endif
+#endif
+
+#ifdef TARGET_X86
+//#include <Arduino.h>
+//#include <ESP8266WiFi.h>
+using namespace std;
+#include <stdint.h>
+#include <stdio.h>
+#endif
+
 
 #define DO_SERIAL
 //#define DO_FS
@@ -43,16 +88,18 @@ const int io_out_ign1  = 14; // IO14(D5), low on
 const int io_led1  = 16; // IO16(D0), drive high
 #endif
 #ifdef VER2_BRD
+// Rearranged a few outputs for ease of layout on SMD board only
 const int io_led1  = 14; // IO14(D5), drive high
 const int io_out_ign1  = 16; // IO16(D0), drive high
 #endif
 
-#define TCI_DWELL_TIME 2000
-#define CDI_TRIGGER_TIME 1000
+// These are usec time constants are length of ignitor on time
+#define TCI_DWELL_TIME 2000 // For TCI mode(use_tci=1)
+#define CDI_TRIGGER_TIME 1000 // For CDI mode(use_tci=0)
 
 //#define TM_MASK 0xffffffff
 #define TM_MASK 0xffffff
-uint32_t tm_last = 0;
+uint32_t tm_last = 0; // a place to store last usec time reading from system
 
 // Slight problem using 16-bit, at 1500rpm us rev count is 40000us.  So getting below
 // that some it will overflow somewhere around 1200rpm.  We do limit count up now, so might
@@ -101,7 +148,7 @@ uint8_t use_fs = 0; // true if using file system for log
 uint8_t cfg_gen_lo = 0; // true if signal gen pulse low, otherwise high
 uint8_t perform_1s_stats_request = 0; // 1H=1 second stats/work, 2H=4second stats/work
 
-uint16_t ignitor_dwell_in_us = 0; // TCI use, time in us since start ignitor/dwell
+uint16_t tci_ignitor_dwell_in_us = 0; // TCI use, time in us since start ignitor/dwell
 uint16_t ignitor_in_us = 0; // time in us to delay and then turn on ignitor
 uint16_t last_ignitor_in_us = 0; // last set to show in stats
 
@@ -140,15 +187,72 @@ uint32_t total_tim_us_diff_stats = 0;
 uint32_t total_tim_us_diff_count = 0;
 #endif
 uint8_t did_pr_stats_ignore_is_diff_stats = 0; // set to true after print stats done to ignore min,max calc of us diff
-#define F_USED_CNT_NUM 40
-uint8_t f_use_cnt = F_USED_CNT_NUM; // count down some amount of F fires before allowing advance timing.
+#define F_USED_CNT_NUM_40 40
+uint8_t f_use_cnt = F_USED_CNT_NUM_40; // count down some amount of F fires before allowing advance timing.
 bool too_slow_rpm_use_f_fire = false; // flag to fire on F when advance not at slow RPM
 uint16_t perc_x10_af_angle = 300; // Angle x10 in percent rev, from ADV to F measure at start
 char logln[160];
 
+#ifdef TARGET_X86
+#define OUTPUT 1
+#define INPUT_PULLUP 2
+#define INPUT 3
+#define OUTPUT_OPEN_DRAIN 4
+
+void pinMode(int io, int md)
+{
+}
+
+void digitalWrite(int io, int md)
+{
+  if (io == io_led0)
+    sim_io  = md ? (sim_io | SIM_IO_L0) : (sim_io & ~SIM_IO_L0);
+  else if (io == io_led1)
+    sim_io  = md ? (sim_io | SIM_IO_L1) : (sim_io & ~SIM_IO_L1);
+  else if (io == io_out_ign1)
+    sim_io  = md ? (sim_io | SIM_IO_i1) : (sim_io & ~SIM_IO_i1);
+  else if (io == io_out_ign2)
+    sim_io  = md ? (sim_io | SIM_IO_i2) : (sim_io & ~SIM_IO_i2);
+}
+
+uint32_t digitalRead(int io)
+{
+  if (io == io_in_f)
+    return sim_io & SIM_IO_F;
+  else if (io == io_in_a)
+    return sim_io & SIM_IO_A;
+  else if (io == io_in_sw1)
+    return sim_io & SIM_IO_SW1;
+  else if (io == io_in_sw2)
+    return sim_io & SIM_IO_SW2;
+
+  return 0;
+}
+
+void Serial_begin(int baud)
+{
+}
+void  Serial_println(const char *msg)
+{
+  printf("%s\n", msg);
+}
+uint64_t system_get_time(void)
+{
+  return sim_us_tm;
+}
+
+void system_soft_wdt_feed(void)
+{
+}
+void delayMicroseconds(uint32_t usec)
+{
+  sim_us_tm += usec;
+}
+#endif
+
 #ifdef DO_WIFI_SERVER
 ESP8266WebServer server(80);
-const char* ssid = "CenturyLink4019";
+const char* ssid = "YourWifi";
 const char* password = "";
 #endif
 #ifdef DO_WIFI_SERVER
@@ -190,7 +294,7 @@ void setup(void)
   pinMode(io_in_a, INPUT);
 
   digitalWrite(io_led0, 0);
-  Serial.begin(115200);
+  Serial_begin(115200);
 
 #ifdef DO_WIFI_SERVER
   WiFi.mode(WIFI_STA);
@@ -282,7 +386,7 @@ if (ramlog_i < (RAMLOG_SZ-120))
 }
 #else
 #ifdef DO_SERIAL
-  Serial.println(msg);
+  Serial_println(msg);
 #endif
 #endif
 
@@ -394,12 +498,12 @@ void ignitor_disengage_work(void)
 }
 
 //-----------------------------------
-void dwell_disengage_work(void)
+void tci_dwell_disengage_work(void)
 {
-    ignitor_dwell_in_us += tim_us_diff;
-    if (ignitor_dwell_in_us > (TCI_DWELL_TIME*8)) // unexpected, fire position not reached in overlong dwell period
+    tci_ignitor_dwell_in_us += tim_us_diff;
+    if (tci_ignitor_dwell_in_us > (TCI_DWELL_TIME*8)) // unexpected, fire position not reached in overlong dwell period
     {
-      ignitor_dwell_in_us = 0; // turn off dwell work
+      tci_ignitor_dwell_in_us = 0; // turn off dwell work
       ignitor_disengage();
     }
 }
@@ -416,13 +520,14 @@ void ign_engage_work(void)
     {
       if (use_tci)
       {
-        if (ignitor_dwell_in_us > 0)
+        // This is hard to understand, trying to engage by dis-engaging with TCI
+        if (tci_ignitor_dwell_in_us > 0)
         {
-          if (ignitor_dwell_in_us >= TCI_DWELL_TIME)
+          if (tci_ignitor_dwell_in_us >= TCI_DWELL_TIME)
             ignitor_disengage();
           else
           {
-            fire_ign = TCI_DWELL_TIME - ignitor_dwell_in_us;
+            fire_ign = TCI_DWELL_TIME - tci_ignitor_dwell_in_us;
           }
         }
       }
@@ -453,19 +558,23 @@ bool is_sw2_on()
 // Return true if advance is not used at the moment and only firing at F is appropriate.
 bool is_only_f_used()
 {
-  if (is_sw1_adv_on() && f_use_cnt != 0)
-     return true;
-  return false;
+  // if SW1 is OFF(Do not use advance), or if are still counting down initial f-only revs
+  if (!is_sw1_adv_on() || f_use_cnt != 0)
+     return true; // return true, only fire at F, no advance please
+  return false; // feel free to fire at advanced timing before F mark(and after ADV mark)
 }
 
 //-----------------------------------
 // Perform every 1 seconds work
 void work_1s()
 {
+  // TODO: this needs to be synced appropriately, this is primarily for stats.
+  // Perhaps use a more dedicated counter would be better!
+  // We need some better sense when starting at less than firing RPM.
   if (cnt_revs_stats == 0) // no revs counted for second, stopped
   {
      // reset so F has to be used before advance considered
-     f_use_cnt = F_USED_CNT_NUM;
+     f_use_cnt = F_USED_CNT_NUM_40;
   }
 }
 
@@ -473,6 +582,9 @@ void work_1s()
 // Perform every 4 seconds work
 void work_4s(void)
 {
+  // printing this to serial port takes a certain amount of time.
+  // logging to flash can take considerably more, and it varys based on HW
+  // So we try to arrange this at a time when it does not harm our timing
   sprintf(logln, "r:%d,%d,%d(%d) af:%d,%d,%d(%d) rc:%d re:%d ae:%d lpr:%d adv:%d igus:%d",
     rev_us_min_stats, cnt_revs_stats > 0 ? rev_us_total_stats/cnt_revs_stats : 0, rev_us_max_stats,
     rev_us_max_stats - rev_us_min_stats,
@@ -491,7 +603,7 @@ void work_4s(void)
   max_tim_us_diff_stats = 0;
   min_tim_us_diff_stats = 65000;
 #endif
-
+  // reset our stat counters used for ave,min,max
   rev_us_error_cnt = 0;
   af_us_error_cnt = 0;
 
@@ -503,13 +615,15 @@ void work_4s(void)
   rev_us_max_stats = 0;
   af_us_max_stats = 0;
   did_pr_stats_ignore_is_diff_stats = 1;
-
+  // this is to get a measure of how long this routine takes and show
   time_print_us_stats = (system_get_time() & TM_MASK) - tim_us_now; // ignore roll over for now
 }
 
 //-----------------------------------
+// Event detect, read our IO, allow some filtering and set flags to show when IO changes.
 void ev_detect(void)
 {
+  // This is attempt at debounce filtering
   static const uint16_t filter_constant_on = 25; //us
   static const uint16_t filter_constant_off = 25; // us
 
@@ -517,21 +631,16 @@ void ev_detect(void)
   // Assume this is on F input, not ADV input.
   {
 #if 0
+    // not using at the moment, to come back and code for leading/trailing A,F work.
     uint16_t in_f = digitalRead(io_in_f);
-    if (in_f)
-      if (in_f_cnt_filter < 60000)
-        in_f_cnt_filter += tim_us_diff;
-    else
-      if (in_f_cnt_filter > 5000)
-        in_f_cnt_filter -= tim_us_diff;
     if (in_f != last_in_f)
     {
-      if (in_f == 0 && in_f_cnt_filter < (30000-filter_constant)) // went to 0(leading edge ADV)
+      if (in_f == 0) // went to 0(leading edge ADV)
       {
          ev |= EV_A_MARK;
          last_in_f = in_f;
       } // else went to 1(trailing edge F)
-      else if (in_f == 1 && in_f_cnt_filter > (30000+filter_constant))
+      else if (in_f == 1)
       {
         ev |= EV_F_MARK;
         last_in_f = in_f;
@@ -540,21 +649,15 @@ void ev_detect(void)
     }
     // Not sure what i'm doing with A input here
     uint16_t in_a = digitalRead(io_in_a);
-    if (in_a)
-      if (in_a_cnt_filter < 60000)
-        in_a_cnt_filter += tim_us_diff;
-    else
-      if (in_a_cnt_filter > 5000)
-        in_a_cnt_filter -= tim_us_diff;
 
     if (in_a != last_in_a)
     {
-      if (in_a == 0 && in_a_cnt_filter < (30000-filter_constant)) // went to 0(leading edge ADV)
+      if (in_a == 0) // went to 0(leading edge ADV)
       {
          ev |= EV_A_MARK;
          last_in_a = in_a;
       } // else went to 1(trailing edge ADV)
-      else if (in_a == 1 && in_a_cnt_filter > (30000+filter_constant))
+      else if (in_a == 1)
       {
         ev |= EV_F_MARK;
         last_in_a = in_a;
@@ -572,7 +675,7 @@ void ev_detect(void)
       if (in_f_cnt_filter > ((last_in_f == use_f_neg) ? filter_constant_on : filter_constant_off))
       {
         if (last_in_f == use_f_neg)
-          ev |= EV_F_MARK;//, pr_h16("inf", in_f);
+          ev |= EV_F_MARK;
         last_in_f = in_f;
       }
       else
@@ -609,7 +712,7 @@ void ign_work(void)
   {
     if (ev & EV_A_MARK)
     {
-      if (cnt2_us_af_base > 4000) // ignore filter, us, after last ADV
+      if (cnt2_us_af_base > 4000) // ignore filter, us, after last ADV, crude and questionable
       {
         cnt2_us_af_base = 0; // start counting us up to F
         if (!opt_gen)
@@ -637,7 +740,7 @@ void ign_work(void)
             last_ignitor_in_us = ignitor_in_us; // stats
             if (use_tci)
             {
-              ignitor_dwell_in_us = 1; // start dwell
+              tci_ignitor_dwell_in_us = 1; // start dwell
               // this is crude, we just start dwell at ADV signal here, to do better moving forward
               ignitor_engage();
             }
@@ -649,8 +752,8 @@ void ign_work(void)
             last_ignitor_in_us = ignitor_in_us; // stats
             if (use_tci)
             {
-              ignitor_dwell_in_us = 1; // start dwell
-              ignitor_in_us = CDI_TRIGGER_TIME; // best we can do at the moment
+              tci_ignitor_dwell_in_us = 1; // start dwell
+              //ignitor_in_us = 1;//CDI_TRIGGER_TIME; // best we can do at the moment
               ignitor_engage();
             }
           }
@@ -658,7 +761,7 @@ void ign_work(void)
           {
             if (use_tci)
             {
-              ignitor_dwell_in_us = 1; // start dwell
+              tci_ignitor_dwell_in_us = 1; // start dwell
               ignitor_engage();
             }
 
@@ -682,12 +785,19 @@ void ign_work(void)
         {
           percent_af_adv = 0;
           last_ignitor_in_us = 0;
+          //if (use_tci) WIP!
+          //{
+          //  tci_ignitor_dwell_in_us = 1; // start dwell
+          //  //ignitor_in_us = 
+          //  // this is crude, we just start dwell at ADV signal here, to do better moving forward
+          //  ignitor_engage();
+          //}
         }
       }
     }
     if (ev & EV_F_MARK)
     {
-      if (cnt_f_us_revbase > 4000) // ignore filter, us, after last F
+      if (cnt_f_us_revbase > 4000) // ignore filter, us, after last F, crude and questionable
       {
         tim_us_last_af = cnt2_us_af_base;
         af_us_total_stats += tim_us_last_af;
@@ -699,7 +809,7 @@ void ign_work(void)
         if (is_only_f_used())
         { 
            tim_us_last_rev = cnt_f_us_revbase;
-           if (cnt_revs_stats == 10)
+           if (cnt_revs_stats == (F_USED_CNT_NUM_40/2))
            {
              // store the percent ADV to F angle in percent based on this instance
              // TODO: base it on a average calculated on more than one.
@@ -742,9 +852,9 @@ void ign_work(void)
   //  led0_disengage_work();
   //if (fire_led1 > 0)
   //  led1_disengage_work();
-  if (ignitor_dwell_in_us)
+  if (tci_ignitor_dwell_in_us)
   {
-    dwell_disengage_work();
+    tci_dwell_disengage_work();
   }
   if (fire_ign > 0)
     ignitor_disengage_work();
@@ -793,7 +903,10 @@ void work_10ms_io(void)
 //-----------------------------------
 void timing_work(void)
 {
+  // The TM_MASK here is to use a shorter roll over to help force
+  // any rollover issues by making it roll over faster
   tim_us_now = system_get_time() & TM_MASK;
+  // Deal with roll over, calculate a difference in time from last and use that
   if (tim_us_now >= tm_last)
   {
     tim_us_diff = tim_us_now - tm_last;
@@ -856,7 +969,9 @@ void timing_work(void)
         ++cnt1_s_timebase;
         if ((cnt1_s_timebase & 0x3) == 2) // every 4 seconds
         {
+#ifndef TARGET_X86
           if (opt_gen)
+#endif
           {
             // Generator auto ramp between idle and 6k rpm for example.
             switch(gen_auto_ramp)  // off if set to 0, otherwise counter for below
@@ -874,7 +989,9 @@ void timing_work(void)
             else if (gen_auto_ramp > 0)
               gen_auto_ramp += 1;
           }
+#ifndef TARGET_X86
           else // if not generator do 4 second work
+#endif
             perform_1s_stats_request |= 2; // request 4 second work
         }
       }
@@ -893,6 +1010,19 @@ void testgen_work(void)
     last_cnt2_100us = cnt1_100us_timebase;
     ++gen_cnt_100us;
     #define width_100us_pulse 4
+#ifdef TARGET_X86
+    if (gen_cnt_100us == (gen_100us_base-(13*width_100us_pulse)))
+      sim_io |= SIM_IO_A;
+    else if (gen_cnt_100us == (gen_100us_base-(12*width_100us_pulse)))
+      sim_io &= ~SIM_IO_A;
+    else if (gen_cnt_100us == gen_100us_base-(1*width_100us_pulse))
+      sim_io |= SIM_IO_F;
+    else if (gen_cnt_100us >= gen_100us_base)
+    {
+      sim_io &= ~SIM_IO_F;
+      gen_cnt_100us = 0;
+    }
+#else
     if (gen_cnt_100us == (gen_100us_base-(13*width_100us_pulse)))
       digitalWrite(io_led1, cfg_gen_lo ? 0 : 1);
     else if (gen_cnt_100us == (gen_100us_base-(12*width_100us_pulse)))
@@ -904,6 +1034,7 @@ void testgen_work(void)
       digitalWrite(io_out_ign2, cfg_gen_lo ? 1 : 0);
       gen_cnt_100us = 0;
     }
+#endif
   }
 }
 
@@ -1003,12 +1134,46 @@ void main_prog(void)
   {
     ev_detect();
     timing_work();
+#ifdef TARGET_X86
+    // This generates a trace file on PC of simulated IO changes
+    // We can look at that or generate scope snapshot views based on it to help test
+    if (sim_io_last != sim_io)
+    {
+      static uint32_t sim_us_tm_last = 0;
+      FILE *fp = fopen("sim_io_trace.txt", "a");
+      if (fp)
+      {
+        char cmmt[64]; // comment added to notate for humans
+        char tm_str[64]; // time and IO numbers for parsing
+
+        uint32_t sim_us_delta = sim_us_tm - sim_us_tm_last;
+        //sim_us_delta = sim_io - sim_io_last;
+        cmmt[0] = (sim_io & SIM_IO_A) ? 'A' : '_';
+        cmmt[1] = (sim_io & SIM_IO_F) ? 'F' : '_';
+        cmmt[2] = (sim_io & SIM_IO_i1) ? '1' : '_';
+        cmmt[3] = (sim_io & SIM_IO_L1) ? 'L' : '_';
+        cmmt[4] = ' ';
+        sprintf(&cmmt[5], "%5d", sim_us_delta);
+        sprintf(tm_str, "%d %3d", sim_us_tm, sim_io);
+
+        fprintf(fp, "%16s; %s\n", tm_str, cmmt);
+         fclose(fp);
+      }
+      sim_io_last = sim_io;
+      sim_us_tm_last = sim_us_tm;
+    }
+    sim_us_tm += 20; // bump sim time by 20 usecs
+    if (sim_us_tm > 60000000) // done with simulation?
+      return;
+#else
     if (opt_gen) // act as generator of test signals
+#endif
       testgen_work();
     ign_work();
   }
 }
 
+#ifdef TARGET_D1_MINI
 //-----------------------------------
 // this is an arduino construct, we just use as main entry point and take over looping
 void loop(void)
@@ -1019,3 +1184,18 @@ void loop(void)
 #endif
   main_prog();
 }
+#endif
+
+#ifdef TARGET_X86
+void sim_x86_work()
+{
+}
+
+int main()
+{
+  printf("start sim\n");
+  sim_io |= SIM_IO_SW2; // turn sw1 on(use ADV), sw2 off(on when zero).
+  main_prog();
+  printf("end sim\n");
+}
+#endif
