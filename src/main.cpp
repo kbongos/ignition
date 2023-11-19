@@ -1,4 +1,4 @@
-// Ignitor.cpp - ignition for small engine with ADV and F timing marks
+// main.cpp - ignition for small engine with ADV and F timing marks
 //  Initially for my 1981 CM400T now with pulse signals in to stock AC-CDI.
 // Todo: Make so it can log stats to flash, on demand or stop or something.
 //   Rev limit useful?  Is it a needed thing?
