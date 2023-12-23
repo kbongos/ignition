@@ -154,8 +154,10 @@ uint16_t tci_start_dwell_in_us = 0; // calculated place to start tci dwell from 
 
 #define BOOL_t uint8_t
 const BOOL_t use_f_edges = 0; // option 1=use only single input sensor, leading=A, trailing=F
-const BOOL_t use_f_neg = 0; // 0= pulse is positive reading
-const BOOL_t use_adv_neg = 0; // 0= pulse is positive reading
+                              // otherwise these are separate input pins
+                              // there are latching style HALL sensors available
+const BOOL_t use_f_neg = 0; // 0= pulse is positive edge reading
+const BOOL_t use_adv_neg = 0; // 0= pulse is positive edge reading
 const BOOL_t use_ign_pos = 1; // 1= pulse is positive on
 const BOOL_t use_led1_pos = 1; // 1= on when positive
 const BOOL_t use_tci = 0; // 1= on, use TCI(12v) long dwell[EXPERIMENTAL!], otherwise assume CDI fires immediately
@@ -218,13 +220,13 @@ void digitalWrite(int io, int md)
 uint32_t digitalRead(int io)
 {
   if (io == io_in_f)
-    return sim_io & SIM_IO_F;
+    return (sim_io & SIM_IO_F ? 1 : 0);
   else if (io == io_in_a)
-    return sim_io & SIM_IO_A;
+    return (sim_io & SIM_IO_A ? 1 : 0);
   else if (io == io_in_sw1)
-    return sim_io & SIM_IO_SW1;
+    return (sim_io & SIM_IO_SW1 ? 1 :0);
   else if (io == io_in_sw2)
-    return sim_io & SIM_IO_SW2;
+    return (sim_io & SIM_IO_SW2 ? 1 : 0);
 
   return 0;
 }
@@ -641,50 +643,10 @@ void work_4s(void)
 // Event detect, read our IO, allow some filtering and set flags to show when IO changes.
 void ev_detect(void)
 {
-  // This is attempt at debounce filtering
+  // This is attempt at debounce filtering, it's dubious, may get rid of it
   static const uint16_t filter_constant_on = 25; //us
   static const uint16_t filter_constant_off = 25; // us
 
-  if (use_f_edges) // use only leading edge(A), trailing edge(F) for timing.
-  // Assume this is on F input, not ADV input.
-  {
-#if 0
-    // not using at the moment, to come back and code for leading/trailing A,F work.
-    uint16_t in_f = digitalRead(io_in_f);
-    if (in_f != last_in_f)
-    {
-      if (in_f == 0) // went to 0(leading edge ADV)
-      {
-         ev |= EV_A_MARK;
-         last_in_f = in_f;
-      } // else went to 1(trailing edge F)
-      else if (in_f == 1)
-      {
-        ev |= EV_F_MARK;
-        last_in_f = in_f;
-      }
-      //pr_u16("F EV", in_f);
-    }
-    // Not sure what i'm doing with A input here
-    uint16_t in_a = digitalRead(io_in_a);
-
-    if (in_a != last_in_a)
-    {
-      if (in_a == 0) // went to 0(leading edge ADV)
-      {
-         ev |= EV_A_MARK;
-         last_in_a = in_a;
-      } // else went to 1(trailing edge ADV)
-      else if (in_a == 1)
-      {
-        ev |= EV_F_MARK;
-        last_in_a = in_a;
-      }
-      //pr_u16("A EV", in_a);
-    }
-#endif    
-  }
-  else // use separate input signals for (A) and (F) timing marks
   {
     BOOL_t in_f = digitalRead(io_in_f);
     // pulse active on low(short duration), off is high, long duration
@@ -694,15 +656,19 @@ void ev_detect(void)
       {
         if (last_in_f == use_f_neg)
           ev |= EV_F_MARK;
-        last_in_f = in_f;
+        last_in_f = in_f; // hmm, questionable.
       }
       else
         in_f_cnt_filter += tim_us_diff;
     }
     else if (in_f_cnt_filter > tim_us_diff)
-      in_f_cnt_filter -= tim_us_diff;
+      in_f_cnt_filter -= tim_us_diff; // hmm, may not get reset completely
 
-    BOOL_t in_a = digitalRead(io_in_a);
+    // if use_f_edges true - use only leading edge(A), trailing edge(F) for timing.
+    //    Assume this is on F input, not ADV input.
+    // else use separate input signals for (A) and (F) timing marks
+    BOOL_t in_a = use_f_edges ? in_f : digitalRead(io_in_a);
+
     if (in_a != last_in_a)
     {
       if (in_a_cnt_filter > ((last_in_a == use_adv_neg) ? filter_constant_on : filter_constant_off))
@@ -1088,7 +1054,7 @@ void testgen_work_ver2(void)
   static uint32_t gen_cnt_1us = 0;
   static uint16_t gen_rev_cnt = 0;
 
-  while (gen_cnt_1us < cnt_us_gen_base)
+  while (gen_cnt_1us <= cnt_us_gen_base)
   {
     gen_cnt_1us += 1;
     // 45deg advance = rev/8 of rev >> 4, 22.5deg = rev/16, or rev >> 5
@@ -1110,20 +1076,35 @@ void testgen_work_ver2(void)
 #define Gen_set_F() digitalWrite(io_out_ign2, cfg_gen_lo ? 0 : 1)
 #define Gen_clr_F() digitalWrite(io_out_ign2, cfg_gen_lo ? 1 : 0)
 #endif
-
-    if (gen_cnt_1us == gen_1us_rev_offset)
-      Gen_set_A();
-    else if (gen_cnt_1us == (gen_1us_rev_offset + gen_1us_pulsewidth))
-      Gen_clr_A();
-    else if (gen_cnt_1us == (gen_1us_rev_offset + gen_1us_45deg))
-      Gen_set_F();
-    else if (gen_cnt_1us == (gen_1us_rev_offset + gen_1us_45deg + gen_1us_pulsewidth))
-      Gen_clr_F();
-    else if (gen_cnt_1us == gen_1us_base)
+    if (use_f_edges)
     {
-      gen_cnt_1us = 0;
-      cnt_us_gen_base = 0;
-      gen_rev_cnt += 1;
+      if (gen_cnt_1us == gen_1us_rev_offset)
+        Gen_set_F();
+      else if (gen_cnt_1us == (gen_1us_rev_offset + gen_1us_45deg))
+        Gen_clr_F();
+      else if (gen_cnt_1us == gen_1us_base)
+      {
+        gen_cnt_1us = 0;
+        cnt_us_gen_base = 0;
+        gen_rev_cnt += 1;
+      }
+    }
+    else
+    {
+      if (gen_cnt_1us == gen_1us_rev_offset)
+        Gen_set_A();
+      else if (gen_cnt_1us == (gen_1us_rev_offset + gen_1us_pulsewidth))
+        Gen_clr_A();
+      else if (gen_cnt_1us == (gen_1us_rev_offset + gen_1us_45deg))
+        Gen_set_F();
+      else if (gen_cnt_1us == (gen_1us_rev_offset + gen_1us_45deg + gen_1us_pulsewidth))
+        Gen_clr_F();
+      else if (gen_cnt_1us >= gen_1us_base)
+      {
+        gen_cnt_1us = 0;
+        cnt_us_gen_base = 0;
+        gen_rev_cnt += 1;
+      }
     }
   }
 }
@@ -1254,7 +1235,9 @@ void main_prog(void)
     }
     //sim_us_tm += 20; // bump sim time by 20 usecs
     sim_us_tm += 10; // bump sim time by 10 usecs
-    if (sim_us_tm > 60000000) // done with simulation?
+    //if (sim_us_tm == 30000000)
+    //   sim_us_tm = sim_us_tm; // breakpoint
+    if (sim_us_tm >  60000000) // done with simulation?
       return;
 #else
     if (opt_gen) // act as generator of test signals
