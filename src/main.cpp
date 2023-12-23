@@ -34,7 +34,6 @@ uint16_t sim_io = 0;
 uint16_t sim_io_last = 0; // change detect
 #endif
 
-
 #ifdef TARGET_D1_MINI
 #define Serial_begin Serial.begin
 #define Serial_println Serial.println
@@ -117,7 +116,7 @@ uint16_t cnt_adv_us_revlast = 0; // last us count of ADV to ADV
 
 uint16_t cnt2_us_af_base = 0; // us count up since last A
 uint16_t cnt2_us_af_last = 0; // last us count of F to F
-
+uint32_t cnt_us_gen_base = 0; // signal generator 1us time counter
 uint16_t cnt1_100us_timebase = 0; // general timing, bump up, reset cnt1_us_timebase
 uint16_t cnt1_ms_timebase = 0; // general timing, bump up, reset cnt1_100us_timebase
 uint16_t cnt1_s_timebase = 0; // general timing, bump up, reset cnt1_ms_timebase
@@ -148,9 +147,10 @@ uint8_t use_fs = 0; // true if using file system for log
 uint8_t cfg_gen_lo = 0; // true if signal gen pulse low, otherwise high
 uint8_t perform_1s_stats_request = 0; // 1H=1 second stats/work, 2H=4second stats/work
 
-uint16_t tci_ignitor_dwell_in_us = 0; // TCI use, time in us since start ignitor/dwell
+uint16_t tci_ignitor_dwelling_us = 0; // TCI use, time in us since start ignitor/dwell
 uint16_t ignitor_in_us = 0; // time in us to delay and then turn on ignitor
 uint16_t last_ignitor_in_us = 0; // last set to show in stats
+uint16_t tci_start_dwell_in_us = 0; // calculated place to start tci dwell from ADV
 
 #define BOOL_t uint8_t
 const BOOL_t use_f_edges = 0; // option 1=use only single input sensor, leading=A, trailing=F
@@ -187,8 +187,8 @@ uint32_t total_tim_us_diff_stats = 0;
 uint32_t total_tim_us_diff_count = 0;
 #endif
 uint8_t did_pr_stats_ignore_is_diff_stats = 0; // set to true after print stats done to ignore min,max calc of us diff
-#define F_USED_CNT_NUM_40 40
-uint8_t f_use_cnt = F_USED_CNT_NUM_40; // count down some amount of F fires before allowing advance timing.
+#define F_USED_CNT_NUM_20 20
+uint8_t f_use_cnt = F_USED_CNT_NUM_20; // count down some amount of F fires before allowing advance timing.
 bool too_slow_rpm_use_f_fire = false; // flag to fire on F when advance not at slow RPM
 uint16_t perc_x10_af_angle = 300; // Angle x10 in percent rev, from ADV to F measure at start
 char logln[160];
@@ -500,11 +500,29 @@ void ignitor_disengage_work(void)
 //-----------------------------------
 void tci_dwell_disengage_work(void)
 {
-    tci_ignitor_dwell_in_us += tim_us_diff;
-    if (tci_ignitor_dwell_in_us > (TCI_DWELL_TIME*8)) // unexpected, fire position not reached in overlong dwell period
+    tci_ignitor_dwelling_us += tim_us_diff;
+    if (tci_ignitor_dwelling_us > (TCI_DWELL_TIME*8)) // unexpected, fire position not reached in overlong dwell period
     {
-      tci_ignitor_dwell_in_us = 0; // turn off dwell work
+      tci_ignitor_dwelling_us = 0; // turn off dwell work
       ignitor_disengage();
+    }
+}
+
+//-----------------------------------
+// time down @tci_start_dwell_in_us and engage ignitor when time up
+// only called if tci_start_dwell_in_us is non-zero
+void tci_start_dwell_work(void)
+{
+
+    if (tci_start_dwell_in_us > tim_us_diff)
+      tci_start_dwell_in_us -= tim_us_diff;
+    else
+      tci_start_dwell_in_us = 0;
+    if (tci_start_dwell_in_us == 0) // time to fire
+    {
+      ignitor_engage(); // start dwelling
+      tci_ignitor_dwelling_us = 1; // start timing dwell
+      // we will have F turn dwell off and fire for now
     }
 }
 
@@ -518,20 +536,20 @@ void ign_engage_work(void)
       ignitor_in_us = 0;
     if (ignitor_in_us == 0) // time to fire
     {
-      if (use_tci)
-      {
-        // This is hard to understand, trying to engage by dis-engaging with TCI
-        if (tci_ignitor_dwell_in_us > 0)
-        {
-          if (tci_ignitor_dwell_in_us >= TCI_DWELL_TIME)
-            ignitor_disengage();
-          else
-          {
-            fire_ign = TCI_DWELL_TIME - tci_ignitor_dwell_in_us;
-          }
-        }
-      }
-      else
+      //if (use_tci)
+      //{
+      //  // This is hard to understand, trying to engage by dis-engaging with TCI
+      //  if (tci_ignitor_dwell_in_us > 0)
+      //  {
+      //    if (tci_ignitor_dwell_in_us >= TCI_DWELL_TIME)
+      //      ignitor_disengage();
+      //    else
+      //    {
+      //      fire_ign = TCI_DWELL_TIME - tci_ignitor_dwell_in_us;
+      //    }
+      //  }
+      //}
+      //else
       {
          fire_ign = CDI_TRIGGER_TIME;
          ignitor_engage();
@@ -574,7 +592,7 @@ void work_1s()
   if (cnt_revs_stats == 0) // no revs counted for second, stopped
   {
      // reset so F has to be used before advance considered
-     f_use_cnt = F_USED_CNT_NUM_40;
+     f_use_cnt = F_USED_CNT_NUM_20;
   }
 }
 
@@ -708,6 +726,9 @@ void ign_work(void)
   if (ignitor_in_us > 0)
     ign_engage_work();
 
+  if ((use_tci != 0) && (tci_start_dwell_in_us > 0))
+    tci_start_dwell_work();
+
   if (ev != 0)
   {
     if (ev & EV_A_MARK)
@@ -740,9 +761,9 @@ void ign_work(void)
             last_ignitor_in_us = ignitor_in_us; // stats
             if (use_tci)
             {
-              tci_ignitor_dwell_in_us = 1; // start dwell
+              //tci_ignitor_dwell_in_us = 1; // start dwell
               // this is crude, we just start dwell at ADV signal here, to do better moving forward
-              ignitor_engage();
+              //ignitor_engage();
             }
           }
           else if (tim_us_last_rev <= max_rpm_min_us) // faster RPM just give max advance
@@ -750,20 +771,20 @@ void ign_work(void)
             ignitor_in_us = 10; // set delay to fire almost immediately(at ADV mark here)
             percent_af_adv = 99;
             last_ignitor_in_us = ignitor_in_us; // stats
-            if (use_tci)
-            {
-              tci_ignitor_dwell_in_us = 1; // start dwell
-              //ignitor_in_us = 1;//CDI_TRIGGER_TIME; // best we can do at the moment
-              ignitor_engage();
-            }
+            //if (use_tci)
+            //{
+            //  tci_ignitor_dwell_in_us = 1; // start dwell
+            //  //ignitor_in_us = 1;//CDI_TRIGGER_TIME; // best we can do at the moment
+            //  ignitor_engage();
+            //}
           }
           else // between 2k and 6k rpm
           {
-            if (use_tci)
-            {
-              tci_ignitor_dwell_in_us = 1; // start dwell
-              ignitor_engage();
-            }
+            //if (use_tci)
+            //{
+            //  tci_ignitor_dwell_in_us = 1; // start dwell
+            //  ignitor_engage();
+            //}
 
             //percent_af_adv = (range_us - (tim_us_last_rev-max_rpm_min_us)) / af_us_div100;
             percent_af_adv = 100 - ((tim_us_last_rev-max_rpm_min_us) / af_us_div100);
@@ -785,13 +806,20 @@ void ign_work(void)
         {
           percent_af_adv = 0;
           last_ignitor_in_us = 0;
-          //if (use_tci) WIP!
-          //{
+          if (use_tci) // WIP!
+          {
+            if (f_use_cnt == 0) // been running a minimum number of revs
+            {
+              if (tim_us_last_af < (TCI_DWELL_TIME+500) || tim_us_last_af > 40000) // try to keep in some bounds
+                tci_start_dwell_in_us = 3800;
+              else tci_start_dwell_in_us = tim_us_last_af - TCI_DWELL_TIME;
+            }
+
           //  tci_ignitor_dwell_in_us = 1; // start dwell
           //  //ignitor_in_us = 
           //  // this is crude, we just start dwell at ADV signal here, to do better moving forward
           //  ignitor_engage();
-          //}
+          }
         }
       }
     }
@@ -809,7 +837,7 @@ void ign_work(void)
         if (is_only_f_used())
         { 
            tim_us_last_rev = cnt_f_us_revbase;
-           if (cnt_revs_stats == (F_USED_CNT_NUM_40/2))
+           if (f_use_cnt != 0 && cnt_revs_stats == (F_USED_CNT_NUM_20/2))
            {
              // store the percent ADV to F angle in percent based on this instance
              // TODO: base it on a average calculated on more than one.
@@ -833,8 +861,16 @@ void ign_work(void)
           led2_disengage();
         if (is_only_f_used() || too_slow_rpm_use_f_fire) // do not use adv, so fire at F
         { 
-          fire_ign = CDI_TRIGGER_TIME;
-          ignitor_engage();
+          if (use_tci && tci_ignitor_dwelling_us > 0)//tci_start_dwell_in_us > 0)
+          {
+            ignitor_disengage();
+            tci_start_dwell_in_us = 0;
+          }
+          else
+          {
+            fire_ign = CDI_TRIGGER_TIME;
+            ignitor_engage();
+          }
           too_slow_rpm_use_f_fire = 0;
           if (f_use_cnt > 0)
              f_use_cnt -= 1;
@@ -852,7 +888,7 @@ void ign_work(void)
   //  led0_disengage_work();
   //if (fire_led1 > 0)
   //  led1_disengage_work();
-  if (tci_ignitor_dwell_in_us)
+  if (tci_ignitor_dwelling_us)
   {
     tci_dwell_disengage_work();
   }
@@ -940,6 +976,13 @@ void timing_work(void)
   if (cnt2_us_af_base < 65000)
      cnt2_us_af_base += tim_us_diff;
 
+#ifndef TARGET_X86
+  if (opt_gen)
+#endif
+  {
+     cnt_us_gen_base += tim_us_diff;
+  }
+
   cnt2_us_timebase += tim_us_diff;
   if (cnt2_us_timebase > 100)
   {
@@ -1001,7 +1044,7 @@ void timing_work(void)
 
 //-----------------------------------
 // Output on led2 a generated ADV mark, on io_out_ign2 a F mark.
-void testgen_work(void)
+void testgen_work_ver1_4rpms(void)
 {
   static uint16_t last_cnt2_100us = 0;
   static uint16_t gen_cnt_100us = 0;
@@ -1035,6 +1078,53 @@ void testgen_work(void)
       gen_cnt_100us = 0;
     }
 #endif
+  }
+}
+
+//-----------------------------------
+// Similar to ver1 but 1us resolution
+void testgen_work_ver2(void)
+{
+  static uint32_t gen_cnt_1us = 0;
+  static uint16_t gen_rev_cnt = 0;
+
+  while (gen_cnt_1us < cnt_us_gen_base)
+  {
+    gen_cnt_1us += 1;
+    // 45deg advance = rev/8 of rev >> 4, 22.5deg = rev/16, or rev >> 5
+    // Make pulse 1/16 of this amount, amt >> 5.
+    uint32_t gen_1us_base = gen_100us_base * 100UL;
+    uint16_t gen_1us_45deg = (uint16_t)(gen_1us_base >> 4);
+    uint32_t gen_1us_rev_offset = gen_1us_45deg;
+
+    // pulse width is relative to rev speed, so make it so, like 1/16 of advance amount
+    uint16_t gen_1us_pulsewidth = (uint16_t)(gen_1us_base >> (4+5));
+#ifdef TARGET_X86
+#define Gen_set_A() sim_io |= SIM_IO_A
+#define Gen_clr_A() sim_io &= ~SIM_IO_A
+#define Gen_set_F() sim_io |= SIM_IO_F
+#define Gen_clr_F() sim_io &= ~SIM_IO_F
+#else
+#define Gen_set_A() digitalWrite(io_led1, cfg_gen_lo ? 0 : 1)
+#define Gen_clr_A() digitalWrite(io_led1, cfg_gen_lo ? 1 : 0)
+#define Gen_set_F() digitalWrite(io_out_ign2, cfg_gen_lo ? 0 : 1)
+#define Gen_clr_F() digitalWrite(io_out_ign2, cfg_gen_lo ? 1 : 0)
+#endif
+
+    if (gen_cnt_1us == gen_1us_rev_offset)
+      Gen_set_A();
+    else if (gen_cnt_1us == (gen_1us_rev_offset + gen_1us_pulsewidth))
+      Gen_clr_A();
+    else if (gen_cnt_1us == (gen_1us_rev_offset + gen_1us_45deg))
+      Gen_set_F();
+    else if (gen_cnt_1us == (gen_1us_rev_offset + gen_1us_45deg + gen_1us_pulsewidth))
+      Gen_clr_F();
+    else if (gen_cnt_1us == gen_1us_base)
+    {
+      gen_cnt_1us = 0;
+      cnt_us_gen_base = 0;
+      gen_rev_cnt += 1;
+    }
   }
 }
 
@@ -1162,13 +1252,15 @@ void main_prog(void)
       sim_io_last = sim_io;
       sim_us_tm_last = sim_us_tm;
     }
-    sim_us_tm += 20; // bump sim time by 20 usecs
+    //sim_us_tm += 20; // bump sim time by 20 usecs
+    sim_us_tm += 10; // bump sim time by 10 usecs
     if (sim_us_tm > 60000000) // done with simulation?
       return;
 #else
     if (opt_gen) // act as generator of test signals
 #endif
-      testgen_work();
+    //testgen_work_ver1_4rpms();
+    testgen_work_ver2();
     ign_work();
   }
 }
@@ -1194,7 +1286,9 @@ void sim_x86_work()
 int main()
 {
   printf("start sim\n");
-  sim_io |= SIM_IO_SW2; // turn sw1 on(use ADV), sw2 off(on when zero).
+  if (use_tci) // for TCI now, set switch to not attempt dwell, just want idle working
+    sim_io |= SIM_IO_SW1; // turn sw1 off(do not use ADV)
+  sim_io |= SIM_IO_SW2; // turn sw2 off(on when zero).
   main_prog();
   printf("end sim\n");
 }
